@@ -250,3 +250,19 @@
     (ok (map-set tasks { id: task-id } (merge task { priority: new-priority })))
   )
 )
+
+
+(define-map task-tags
+  { task-id: uint }
+  { tags: (list 5 (string-utf8 20)) }
+)
+
+(define-public (add-tag (task-id uint) (tag (string-utf8 20)))
+  (let (
+    (current-tags (default-to (list) (get tags (map-get? task-tags { task-id: task-id }))))
+  )
+    (ok (map-set task-tags
+      { task-id: task-id }
+      { tags: (unwrap! (as-max-len? (append current-tags tag) u5) (err u500)) }))
+  )
+)
