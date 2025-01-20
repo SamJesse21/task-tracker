@@ -185,3 +185,19 @@
         }))
   )
 )
+
+
+(define-map task-dependencies
+  { task-id: uint }
+  { dependent-on: (list 10 uint) }
+)
+
+(define-public (add-dependency (task-id uint) (dependency-id uint))
+  (let (
+    (current-deps (default-to (list) (get dependent-on (map-get? task-dependencies { task-id: task-id }))))
+  )
+    (ok (map-set task-dependencies 
+        { task-id: task-id }
+        { dependent-on: (unwrap! (as-max-len? (append current-deps dependency-id) u10) (err u500)) }))
+  )
+)
