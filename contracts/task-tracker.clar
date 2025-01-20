@@ -150,3 +150,17 @@
     (ok true)
   )
 )
+
+
+;; Add assignee field to tasks map
+(define-map task-assignments
+  { task-id: uint }
+  { assignee: principal }
+)
+
+(define-public (assign-task (task-id uint) (assignee principal))
+  (let ((task (unwrap! (map-get? tasks { id: task-id }) (err u404))))
+    (asserts! (is-eq tx-sender (get creator task)) (err u403))
+    (ok (map-set task-assignments { task-id: task-id } { assignee: assignee }))
+  )
+)
