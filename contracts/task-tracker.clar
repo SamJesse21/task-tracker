@@ -220,3 +220,33 @@
         reminder-set: true
       }))
 )
+
+
+(define-map priority-history
+  { task-id: uint, update-id: uint }
+  {
+    old-priority: uint,
+    new-priority: uint,
+    update-time: uint
+  }
+)
+
+(define-data-var next-priority-update-id uint u0)
+
+(define-public (update-priority (task-id uint) (new-priority uint))
+  (let (
+    (task (unwrap! (map-get? tasks { id: task-id }) (err u404)))
+    (update-id (var-get next-priority-update-id))
+  )
+    (var-set next-priority-update-id (+ update-id u1))
+    (map-set priority-history
+      { task-id: task-id, update-id: update-id }
+      {
+        old-priority: (get priority task),
+        new-priority: new-priority,
+        update-time: block-height
+      }
+    )
+    (ok (map-set tasks { id: task-id } (merge task { priority: new-priority })))
+  )
+)
