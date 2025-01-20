@@ -1,5 +1,6 @@
 ;; Task Tracker Smart Contract
 
+;; Update task structure
 (define-map tasks
   { id: uint }
   {
@@ -7,7 +8,8 @@
     description: (optional (string-utf8 500)),
     deadline: uint,
     completed: bool,
-    creator: principal
+    creator: principal,
+    priority: uint
   }
 )
 ;; Store the next task ID
@@ -17,11 +19,12 @@
 (define-data-var task-ids (list 2000 uint) (list))
 (define-constant MAX-TASK-IDS 1000)
 
-;; Create a new task
+;; Update create-task function
 (define-public (create-task 
   (title (string-utf8 100))
   (description (optional (string-utf8 500)))
   (deadline uint)
+  (priority uint)
 )
   (let 
     (
@@ -42,7 +45,8 @@
         description: description,
         deadline: deadline,
         completed: false,
-        creator: tx-sender
+        creator: tx-sender,
+        priority: priority
       }
     )
     
@@ -94,3 +98,37 @@
     false
   )
 )
+
+
+(define-map comments
+  { task-id: uint, comment-id: uint }
+  {
+    commenter: principal,
+    comment: (string-utf8 500)
+  }
+)
+
+(define-data-var next-comment-id uint u0)
+
+(define-public (add-comment (task-id uint) (comment (string-utf8 500)))
+  (let 
+    (
+      (comment-id (var-get next-comment-id))
+    )
+    ;; Increment the comment ID for the next comment
+    (var-set next-comment-id (+ comment-id u1))
+    
+    ;; Add the comment to the map
+    (map-set comments 
+      { task-id: task-id, comment-id: comment-id }
+      {
+        commenter: tx-sender,
+        comment: comment
+      }
+    )
+    
+    (ok comment-id)
+  )
+)
+
+
