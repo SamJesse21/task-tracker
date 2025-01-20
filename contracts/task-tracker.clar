@@ -201,3 +201,22 @@
         { dependent-on: (unwrap! (as-max-len? (append current-deps dependency-id) u10) (err u500)) }))
   )
 )
+
+
+
+(define-map task-reminders
+  { task-id: uint }
+  { 
+    reminder-time: uint,
+    reminder-set: bool
+  }
+)
+
+(define-public (set-reminder (task-id uint) (reminder-time uint))
+  (ok (map-set task-reminders 
+      { task-id: task-id }
+      { 
+        reminder-time: reminder-time,
+        reminder-set: true
+      }))
+)
