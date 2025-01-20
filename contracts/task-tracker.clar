@@ -164,3 +164,24 @@
     (ok (map-set task-assignments { task-id: task-id } { assignee: assignee }))
   )
 )
+
+
+(define-map task-progress
+  { task-id: uint }
+  { 
+    percentage: uint,
+    last-updated: uint
+  }
+)
+
+(define-public (update-progress (task-id uint) (percentage uint))
+  (let ((task (unwrap! (map-get? tasks { id: task-id }) (err u404))))
+    (asserts! (<= percentage u100) (err u401))
+    (ok (map-set task-progress 
+        { task-id: task-id }
+        { 
+          percentage: percentage,
+          last-updated: block-height
+        }))
+  )
+)
