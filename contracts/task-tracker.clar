@@ -132,3 +132,21 @@
 )
 
 
+
+(define-public (extend-deadline (task-id uint) (new-deadline uint))
+  (let 
+    (
+      (task (unwrap! (map-get? tasks { id: task-id }) (err u404)))
+    )
+    ;; Ensure only the task creator can extend the deadline
+    (asserts! (is-eq tx-sender (get creator task)) (err u403))
+    
+    ;; Update the task's deadline
+    (map-set tasks 
+      { id: task-id }
+      (merge task { deadline: new-deadline })
+    )
+    
+    (ok true)
+  )
+)
