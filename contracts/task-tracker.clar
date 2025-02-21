@@ -266,3 +266,179 @@
       { tags: (unwrap! (as-max-len? (append current-tags tag) u5) (err u500)) }))
   )
 )
+
+
+
+;; Add category mapping
+(define-map task-categories
+  { category-id: uint }
+  { 
+    name: (string-utf8 50),
+    created-by: principal
+  }
+)
+
+(define-data-var next-category-id uint u0)
+
+(define-public (create-category (name (string-utf8 50)))
+  (let ((category-id (var-get next-category-id)))
+    (var-set next-category-id (+ category-id u1))
+    (ok (map-set task-categories 
+        { category-id: category-id }
+        { name: name, created-by: tx-sender }))
+  )
+)
+
+
+(define-map priority-labels
+  { priority-level: uint }
+  { label: (string-utf8 20) }
+)
+
+(define-public (set-priority-label (level uint) (label (string-utf8 20)))
+  (ok (map-set priority-labels 
+      { priority-level: level }
+      { label: label }))
+)
+
+
+
+(define-map shared-tasks
+  { task-id: uint, shared-with: principal }
+  { can-edit: bool }
+)
+
+(define-public (share-task (task-id uint) (user principal) (can-edit bool))
+  (let ((task (unwrap! (map-get? tasks { id: task-id }) (err u404))))
+    (asserts! (is-eq tx-sender (get creator task)) (err u403))
+    (ok (map-set shared-tasks 
+        { task-id: task-id, shared-with: user }
+        { can-edit: can-edit }))
+  )
+)
+
+
+
+(define-map user-statistics
+  { user: principal }
+  {
+    tasks-completed: uint,
+    tasks-created: uint,
+    on-time-completion: uint
+  }
+)
+
+(define-public (update-user-stats (completed bool))
+  (let ((current-stats (default-to 
+        { tasks-completed: u0, tasks-created: u0, on-time-completion: u0 }
+        (map-get? user-statistics { user: tx-sender }))))
+    (ok (map-set user-statistics
+        { user: tx-sender }
+        (merge current-stats 
+          { tasks-completed: (+ (get tasks-completed current-stats) u1) })))
+  )
+)
+
+
+
+(define-map task-templates
+  { template-id: uint }
+  {
+    name: (string-utf8 100),
+    description: (optional (string-utf8 500)),
+    creator: principal,
+    default-priority: uint
+  }
+)
+
+(define-data-var next-template-id uint u0)
+
+(define-public (create-template 
+    (name (string-utf8 100))
+    (description (optional (string-utf8 500)))
+    (default-priority uint))
+  (let ((template-id (var-get next-template-id)))
+    (var-set next-template-id (+ template-id u1))
+    (ok (map-set task-templates
+        { template-id: template-id }
+        {
+          name: name,
+          description: description,
+          creator: tx-sender,
+          default-priority: default-priority
+        }))
+  )
+)
+
+
+
+(define-map archived-tasks
+  { task-id: uint }
+  { 
+    archive-date: uint,
+    archived-by: principal
+  }
+)
+
+(define-public (archive-task (task-id uint))
+  (let ((task (unwrap! (map-get? tasks { id: task-id }) (err u404))))
+    (asserts! (is-eq tx-sender (get creator task)) (err u403))
+    (ok (map-set archived-tasks
+        { task-id: task-id }
+        { 
+          archive-date: block-height,
+          archived-by: tx-sender
+        }))
+  )
+)
+
+
+
+(define-map task-time-logs
+  { task-id: uint, log-id: uint }
+  {
+    start-time: uint,
+    end-time: uint,
+    logged-by: principal
+  }
+)
+
+(define-data-var next-log-id uint u0)
+
+(define-public (log-task-time (task-id uint) (start-time uint) (end-time uint))
+  (let ((log-id (var-get next-log-id)))
+    (var-set next-log-id (+ log-id u1))
+    (ok (map-set task-time-logs
+        { task-id: task-id, log-id: log-id }
+        {
+          start-time: start-time,
+          end-time: end-time,
+          logged-by: tx-sender
+        }))
+  )
+)
+
+
+
+(define-map recurring-tasks
+  { task-id: uint }
+  {
+    frequency: (string-utf8 20), ;; daily, weekly, monthly
+    last-created: uint,
+    active: bool
+  }
+)
+
+(define-public (set-task-recurrence (task-id uint) (frequency (string-utf8 20)))
+  (let ((task (unwrap! (map-get? tasks { id: task-id }) (err u404))))
+    (asserts! (is-eq tx-sender (get creator task)) (err u403))
+    (ok (map-set recurring-tasks
+        { task-id: task-id }
+        {
+          frequency: frequency,
+          last-created: block-height,
+          active: true
+        }))
+  )
+)
+
