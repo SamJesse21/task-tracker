@@ -442,3 +442,148 @@
   )
 )
 
+;; Define status map
+(define-map task-status
+    { task-id: uint }
+    { status: (string-utf8 20) }  ;; "IN_PROGRESS", "BLOCKED", "REVIEW", etc.
+)
+
+(define-public (update-task-status (task-id uint) (new-status (string-utf8 20)))
+    (let ((task (unwrap! (map-get? tasks { id: task-id }) (err u404))))
+        (asserts! (is-eq tx-sender (get creator task)) (err u403))
+        (ok (map-set task-status 
+            { task-id: task-id }
+            { status: new-status }))
+    )
+)
+
+
+(define-map subtasks
+    { parent-id: uint, subtask-id: uint }
+    {
+        title: (string-utf8 100),
+        completed: bool,
+        created-by: principal
+    }
+)
+
+(define-data-var next-subtask-id uint u0)
+
+(define-public (create-subtask (parent-id uint) (title (string-utf8 100)))
+    (let 
+        ((subtask-id (var-get next-subtask-id))
+         (parent-task (unwrap! (map-get? tasks { id: parent-id }) (err u404))))
+        (var-set next-subtask-id (+ subtask-id u1))
+        (ok (map-set subtasks
+            { parent-id: parent-id, subtask-id: subtask-id }
+            {
+                title: title,
+                completed: false,
+                created-by: tx-sender
+            }))
+    )
+)
+
+
+(define-map task-votes
+    { task-id: uint, voter: principal }
+    { rating: uint }  ;; 1-5 rating
+)
+
+(define-public (vote-on-task (task-id uint) (rating uint))
+    (begin
+        (asserts! (and (>= rating u1) (<= rating u5)) (err u401))
+        (ok (map-set task-votes
+            { task-id: task-id, voter: tx-sender }
+            { rating: rating })))
+)
+
+
+(define-map task-attachments
+    { task-id: uint, attachment-id: uint }
+    {
+        url: (string-utf8 200),
+        description: (string-utf8 100),
+        added-by: principal
+    }
+)
+
+(define-data-var next-attachment-id uint u0)
+
+(define-public (add-attachment (task-id uint) (url (string-utf8 200)) (description (string-utf8 100)))
+    (let ((attachment-id (var-get next-attachment-id)))
+        (var-set next-attachment-id (+ attachment-id u1))
+        (ok (map-set task-attachments
+            { task-id: task-id, attachment-id: attachment-id }
+            {
+                url: url,
+                description: description,
+                added-by: tx-sender
+            }))
+    )
+)
+
+
+(define-map task-favorites
+    { user: principal, task-id: uint }
+    { favorited: bool }
+)
+
+(define-public (toggle-favorite (task-id uint))
+    (let ((current-status (default-to false (get favorited (map-get? task-favorites { user: tx-sender, task-id: task-id })))))
+        (ok (map-set task-favorites
+            { user: tx-sender, task-id: task-id }
+            { favorited: (not current-status) }))
+    )
+)
+
+
+(define-map task-difficulty
+    { task-id: uint }
+    { 
+        level: uint,  ;; 1-Easy, 2-Medium, 3-Hard
+        estimated-hours: uint
+    }
+)
+
+(define-public (set-task-difficulty (task-id uint) (level uint) (hours uint))
+    (begin
+        (asserts! (and (>= level u1) (<= level u3)) (err u401))
+        (ok (map-set task-difficulty
+            { task-id: task-id }
+            { 
+                level: level,
+                estimated-hours: hours
+            })))
+)
+
+
+(define-map task-checklist
+    { task-id: uint, item-id: uint }
+    {
+        item: (string-utf8 100),
+        checked: bool
+    }
+)
+
+(define-data-var next-checklist-item-id uint u0)
+
+(define-public (add-checklist-item (task-id uint) (item (string-utf8 100)))
+    (let ((item-id (var-get next-checklist-item-id)))
+        (var-set next-checklist-item-id (+ item-id u1))
+        (ok (map-set task-checklist
+            { task-id: task-id, item-id: item-id }
+            {
+                item: item,
+                checked: false
+            }))
+    )
+)
+
+(define-public (toggle-checklist-item (task-id uint) (item-id uint))
+    (let ((current-item (unwrap! (map-get? task-checklist { task-id: task-id, item-id: item-id }) (err u404))))
+        (ok (map-set task-checklist
+            { task-id: task-id, item-id: item-id }
+            (merge current-item { checked: (not (get checked current-item)) })))
+    )
+)
