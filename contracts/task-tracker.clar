@@ -587,3 +587,206 @@
             (merge current-item { checked: (not (get checked current-item)) })))
     )
 )
+
+
+
+
+(define-public (duplicate-task (task-id uint))
+  (let 
+    (
+      (task (unwrap! (map-get? tasks { id: task-id }) (err u404)))
+      (new-task-id (var-get next-task-id))
+      (current-tasks (var-get task-ids))
+    )
+    (asserts! (< (len current-tasks) u1000) (err u500))
+    (var-set next-task-id (+ new-task-id u1))
+    
+    (map-set tasks 
+      { id: new-task-id }
+      {
+        title: (get title task),
+        description: (get description task),
+        deadline: (get deadline task),
+        completed: false,
+        creator: tx-sender,
+        priority: (get priority task)
+      }
+    )
+    
+    (var-set task-ids (unwrap! (as-max-len? (append current-tasks new-task-id) u1000) (err u500)))
+    
+    (ok new-task-id)
+  )
+)
+
+
+(define-map task-labels
+    { task-id: uint }
+    { color: (string-utf8 20) }
+)
+
+(define-public (set-task-label (task-id uint) (color (string-utf8 20)))
+    (let ((task (unwrap! (map-get? tasks { id: task-id }) (err u404))))
+        (asserts! (is-eq tx-sender (get creator task)) (err u403))
+        (ok (map-set task-labels 
+            { task-id: task-id }
+            { color: color }))
+    )
+)
+
+
+(define-map priority-queue
+    { priority-level: uint }
+    { task-ids: (list 100 uint) }
+)
+
+(define-public (add-to-priority-queue (task-id uint) (priority-level uint))
+    (let ((current-queue (default-to (list) (get task-ids (map-get? priority-queue { priority-level: priority-level })))))
+        (ok (map-set priority-queue
+            { priority-level: priority-level }
+            { task-ids: (unwrap! (as-max-len? (append current-queue task-id) u100) (err u500)) }))
+    )
+)
+
+
+(define-map task-timers
+    { task-id: uint }
+    {
+        start-time: uint,
+        duration: uint,
+        breaks-taken: uint
+    }
+)
+
+(define-public (start-task-timer (task-id uint) (duration uint))
+    (ok (map-set task-timers
+        { task-id: task-id }
+        {
+            start-time: block-height,
+            duration: duration,
+            breaks-taken: u0
+        }))
+)
+
+
+(define-map task-graph
+    { task-id: uint }
+    {
+        blocked-by: (list 50 uint),
+        blocking: (list 50 uint)
+    }
+)
+
+(define-public (add-task-dependency (task-id uint) (depends-on uint))
+    (let 
+        (
+            (current-blocked-by (default-to (list) (get blocked-by (map-get? task-graph { task-id: task-id }))))
+            (current-blocking (default-to (list) (get blocking (map-get? task-graph { task-id: depends-on }))))
+        )
+        (map-set task-graph
+            { task-id: task-id }
+            { blocked-by: (unwrap! (as-max-len? (append current-blocked-by depends-on) u50) (err u500)),
+              blocking: (get blocking (default-to { blocked-by: (list), blocking: (list) } (map-get? task-graph { task-id: task-id }))) })
+        (ok (map-set task-graph
+            { task-id: depends-on }
+            { blocked-by: (get blocked-by (default-to { blocked-by: (list), blocking: (list) } (map-get? task-graph { task-id: depends-on }))),
+              blocking: (unwrap! (as-max-len? (append current-blocking task-id) u50) (err u500)) }))
+    )
+)
+
+
+(define-map task-scores
+    { task-id: uint }
+    {
+        importance: uint,
+        urgency: uint,
+        effort: uint,
+        total-score: uint
+    }
+)
+
+(define-public (set-task-scores (task-id uint) (importance uint) (urgency uint) (effort uint))
+    (ok (map-set task-scores
+        { task-id: task-id }
+        {
+            importance: importance,
+            urgency: urgency,
+            effort: effort,
+            total-score: (+ (+ importance urgency) effort)
+        }))
+)
+
+
+
+(define-map projects
+    { project-id: uint }
+    {
+        name: (string-utf8 100),
+        tasks: (list 100 uint),
+        owner: principal
+    }
+)
+
+(define-data-var next-project-id uint u0)
+
+(define-public (create-project (name (string-utf8 100)))
+    (let ((project-id (var-get next-project-id)))
+        (var-set next-project-id (+ project-id u1))
+        (ok (map-set projects
+            { project-id: project-id }
+            {
+                name: name,
+                tasks: (list),
+                owner: tx-sender
+            }))
+    )
+)
+
+
+(define-map task-collaborators
+    { task-id: uint }
+    {
+        members: (list 10 principal),
+        roles: (list 10 (string-utf8 20))
+    }
+)
+
+(define-public (add-collaborator (task-id uint) (member principal) (role (string-utf8 20)))
+    (let 
+        (
+            (current-members (default-to (list) (get members (map-get? task-collaborators { task-id: task-id }))))
+            (current-roles (default-to (list) (get roles (map-get? task-collaborators { task-id: task-id }))))
+        )
+        (ok (map-set task-collaborators
+            { task-id: task-id }
+            {
+                members: (unwrap! (as-max-len? (append current-members member) u10) (err u500)),
+                roles: (unwrap! (as-max-len? (append current-roles role) u10) (err u500))
+            }))
+    )
+)
+
+
+(define-map task-analytics
+    { task-id: uint }
+    {
+        views: uint,
+        time-spent: uint,
+        revisions: uint,
+        completion-rate: uint
+    }
+)
+
+(define-public (update-task-analytics (task-id uint) (view-count uint) (time-spent uint))
+    (let ((current-analytics (default-to { views: u0, time-spent: u0, revisions: u0, completion-rate: u0 } 
+                            (map-get? task-analytics { task-id: task-id }))))
+        (ok (map-set task-analytics
+            { task-id: task-id }
+            {
+                views: (+ (get views current-analytics) view-count),
+                time-spent: (+ (get time-spent current-analytics) time-spent),
+                revisions: (+ (get revisions current-analytics) u1),
+                completion-rate: (if (> time-spent u0) (/ (* u100 (get time-spent current-analytics)) time-spent) u0)
+            }))
+    )
+)
