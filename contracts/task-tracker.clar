@@ -790,3 +790,85 @@
             }))
     )
 )
+
+
+(define-map task-milestones
+    { task-id: uint, milestone-id: uint }
+    {
+        title: (string-utf8 100),
+        target-date: uint,
+        completed: bool,
+        reward-points: uint
+    }
+)
+
+(define-data-var next-milestone-id uint u0)
+
+(define-public (create-milestone (task-id uint) (title (string-utf8 100)) (target-date uint) (reward-points uint))
+    (let 
+        ((milestone-id (var-get next-milestone-id))
+         (task (unwrap! (map-get? tasks { id: task-id }) (err u404))))
+        (asserts! (is-eq tx-sender (get creator task)) (err u403))
+        (var-set next-milestone-id (+ milestone-id u1))
+        (ok (map-set task-milestones
+            { task-id: task-id, milestone-id: milestone-id }
+            {
+                title: title,
+                target-date: target-date,
+                completed: false,
+                reward-points: reward-points
+            }))
+    )
+)
+
+(define-public (complete-milestone (task-id uint) (milestone-id uint))
+    (let ((milestone (unwrap! (map-get? task-milestones { task-id: task-id, milestone-id: milestone-id }) (err u404))))
+        (ok (map-set task-milestones
+            { task-id: task-id, milestone-id: milestone-id }
+            (merge milestone { completed: true })))
+    )
+)
+
+
+(define-map workflow-states
+    { state-id: uint }
+    {
+        name: (string-utf8 50),
+        allowed-transitions: (list 10 uint)
+    }
+)
+
+(define-map task-workflow
+    { task-id: uint }
+    {
+        current-state: uint,
+        state-history: (list 50 uint),
+        last-modified: uint
+    }
+)
+
+(define-public (create-workflow-state (state-id uint) (name (string-utf8 50)) (transitions (list 10 uint)))
+    (ok (map-set workflow-states
+        { state-id: state-id }
+        {
+            name: name,
+            allowed-transitions: transitions
+        }))
+)
+
+(define-public (transition-task-state (task-id uint) (new-state uint))
+    (let 
+        ((current-workflow (unwrap! (map-get? task-workflow { task-id: task-id }) (err u404)))
+         (current-state (get current-state current-workflow))
+         (state-def (unwrap! (map-get? workflow-states { state-id: current-state }) (err u404))))
+        
+        (asserts! (is-some (index-of (get allowed-transitions state-def) new-state)) (err u403))
+        (ok (map-set task-workflow
+            { task-id: task-id }
+            {
+                current-state: new-state,
+                state-history: (unwrap! (as-max-len? (append (get state-history current-workflow) current-state) u50) (err u500)),
+                last-modified: block-height
+            }))
+    )
+)
