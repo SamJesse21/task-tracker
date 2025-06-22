@@ -871,7 +871,9 @@
                 last-modified: block-height
             }))
     )
-)(define-map user-rewards
+)
+
+(define-map user-rewards
   { user: principal }
   {
     total-points: uint,
