@@ -871,4 +871,269 @@
                 last-modified: block-height
             }))
     )
+)(define-map user-rewards
+  { user: principal }
+  {
+    total-points: uint,
+    available-points: uint,
+    tasks-completed-today: uint,
+    current-streak: uint,
+    longest-streak: uint,
+    last-activity-day: uint
+  }
+)
+
+(define-map reward-store
+  { item-id: uint }
+  {
+    name: (string-utf8 50),
+    description: (string-utf8 200),
+    cost: uint,
+    available: bool,
+    creator: principal
+  }
+)
+
+(define-map user-purchases
+  { user: principal, purchase-id: uint }
+  {
+    item-id: uint,
+    purchase-date: uint,
+    points-spent: uint
+  }
+)
+
+(define-map reward-multipliers
+  { action-type: (string-utf8 20) }
+  { multiplier: uint }
+)
+
+(define-data-var next-reward-item-id uint u0)
+(define-data-var next-purchase-id uint u0)
+
+(define-public (initialize-user-rewards)
+  (let ((existing-rewards (map-get? user-rewards { user: tx-sender })))
+    (if (is-none existing-rewards)
+      (ok (map-set user-rewards
+        { user: tx-sender }
+        {
+          total-points: u0,
+          available-points: u0,
+          tasks-completed-today: u0,
+          current-streak: u0,
+          longest-streak: u0,
+          last-activity-day: u0
+        }))
+      (ok true)
+    )
+  )
+)
+
+(define-public (award-task-completion-points (task-id uint))
+  (let 
+    (
+      (task (unwrap! (map-get? tasks { id: task-id }) (err u404)))
+      (user-reward (unwrap! (map-get? user-rewards { user: tx-sender }) (err u405)))
+      (base-points (* (get priority task) u10))
+      (streak-bonus (calculate-streak-bonus tx-sender))
+      (total-points (+ (+ base-points u1) streak-bonus))
+      (current-day (/ block-height u144))
+    )
+    (asserts! (is-eq tx-sender (get creator task)) (err u403))
+    (asserts! (get completed task) (err u406))
+    
+    (let 
+      (
+        (is-same-day (is-eq (get last-activity-day user-reward) current-day))
+        (is-consecutive-day (is-eq (get last-activity-day user-reward) (- current-day u1)))
+        (new-streak (if is-consecutive-day (+ (get current-streak user-reward) u1) u1))
+        (new-longest (if (> new-streak (get longest-streak user-reward)) new-streak (get longest-streak user-reward)))
+        (daily-tasks (if is-same-day (+ (get tasks-completed-today user-reward) u1) u1))
+      )
+      (ok (map-set user-rewards
+        { user: tx-sender }
+        {
+          total-points: (+ (get total-points user-reward) total-points),
+          available-points: (+ (get available-points user-reward) total-points),
+          tasks-completed-today: daily-tasks,
+          current-streak: new-streak,
+          longest-streak: new-longest,
+          last-activity-day: current-day
+        }))
+    )
+  )
+)
+
+
+
+(define-private (calculate-streak-bonus (user principal))
+  (match (map-get? user-rewards { user: user })
+    rewards
+      (let ((streak (get current-streak rewards)))
+        (if (>= streak u7)
+          u50
+          (if (>= streak u3)
+            u20
+            u0
+          )
+        )
+      )
+    u0
+  )
+)
+
+(define-public (create-reward-item (name (string-utf8 50)) (description (string-utf8 200)) (cost uint))
+  (let ((item-id (var-get next-reward-item-id)))
+    (var-set next-reward-item-id (+ item-id u1))
+    (ok (map-set reward-store
+      { item-id: item-id }
+      {
+        name: name,
+        description: description,
+        cost: cost,
+        available: true,
+        creator: tx-sender
+      }))
+  )
+)
+
+(define-public (purchase-reward-item (item-id uint))
+  (let 
+    (
+      (item (unwrap! (map-get? reward-store { item-id: item-id }) (err u404)))
+      (user-reward (unwrap! (map-get? user-rewards { user: tx-sender }) (err u405)))
+      (purchase-id (var-get next-purchase-id))
+    )
+    (asserts! (get available item) (err u407))
+    (asserts! (>= (get available-points user-reward) (get cost item)) (err u408))
+    
+    (var-set next-purchase-id (+ purchase-id u1))
+    
+    (map-set user-rewards
+      { user: tx-sender }
+      (merge user-reward 
+        { available-points: (- (get available-points user-reward) (get cost item)) }
+      )
+    )
+    
+    (ok (map-set user-purchases
+      { user: tx-sender, purchase-id: purchase-id }
+      {
+        item-id: item-id,
+        purchase-date: block-height,
+        points-spent: (get cost item)
+      }))
+  )
+)
+
+(define-public (award-milestone-points (task-id uint) (milestone-id uint))
+  (let 
+    (
+      (milestone (unwrap! (map-get? task-milestones { task-id: task-id, milestone-id: milestone-id }) (err u404)))
+      (user-reward (unwrap! (map-get? user-rewards { user: tx-sender }) (err u405)))
+      (points (get reward-points milestone))
+    )
+    (asserts! (get completed milestone) (err u406))
+    
+    (ok (map-set user-rewards
+      { user: tx-sender }
+      {
+        total-points: (+ (get total-points user-reward) points),
+        available-points: (+ (get available-points user-reward) points),
+        tasks-completed-today: (get tasks-completed-today user-reward),
+        current-streak: (get current-streak user-reward),
+        longest-streak: (get longest-streak user-reward),
+        last-activity-day: (get last-activity-day user-reward)
+      }))
+  )
+)
+
+(define-public (set-reward-multiplier (action-type (string-utf8 20)) (multiplier uint))
+  (ok (map-set reward-multipliers
+    { action-type: action-type }
+    { multiplier: multiplier }
+  ))
+)
+
+
+
+
+(define-read-only (get-user-rewards (user principal))
+  (map-get? user-rewards { user: user })
+)
+
+(define-read-only (get-reward-item (item-id uint))
+  (map-get? reward-store { item-id: item-id })
+)
+
+(define-read-only (get-user-rank (user principal))
+  (match (map-get? user-rewards { user: user })
+    rewards
+      (let ((total-points (get total-points rewards)))
+        (if (>= total-points u1000)
+          "EXPERT"
+          (if (>= total-points u500)
+            "ADVANCED"
+            (if (>= total-points u100)
+              "INTERMEDIATE"
+              "BEGINNER"
+            )
+          )
+        )
+      )
+    "UNRANKED"
+  )
+)
+
+(define-read-only (calculate-daily-bonus (user principal))
+  (match (map-get? user-rewards { user: user })
+    rewards
+      (let 
+        (
+          (tasks-today (get tasks-completed-today rewards))
+          (current-day (/ block-height u144))
+          (last-day (get last-activity-day rewards))
+        )
+        (if (is-eq current-day last-day)
+          (if (>= tasks-today u5)
+            u100
+            (if (>= tasks-today u3)
+              u50
+              (* tasks-today u10)
+            )
+          )
+          u0
+        )
+      )
+    u0
+  )
+)
+
+(define-public (claim-daily-bonus)
+  (let 
+    (
+      (user-reward (unwrap! (map-get? user-rewards { user: tx-sender }) (err u405)))
+      (bonus-points (calculate-daily-bonus tx-sender))
+      (current-day (/ block-height u144))
+    )
+    (asserts! (> bonus-points u0) (err u409))
+    (asserts! (is-eq (get last-activity-day user-reward) current-day) (err u410))
+    
+    (ok (map-set user-rewards
+      { user: tx-sender }
+      (merge user-reward 
+        {
+          total-points: (+ (get total-points user-reward) bonus-points),
+          available-points: (+ (get available-points user-reward) bonus-points)
+        }
+      )
+    ))
+  )
+)
+
+(define-read-only (get-leaderboard-position (user principal))
+  (match (map-get? user-rewards { user: user })
+    rewards (get total-points rewards)
+    u0
+  )
 )
