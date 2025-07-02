@@ -873,6 +873,172 @@
     )
 )
 
+(define-map smart-priority-engine
+  { user: principal }
+  {
+    deadline-weight: uint,
+    difficulty-weight: uint,
+    hours-weight: uint,
+    preference-weight: uint,
+    auto-update: bool
+  }
+)
+
+(define-map task-smart-scores
+  { task-id: uint }
+  {
+    deadline-score: uint,
+    difficulty-score: uint,
+    hours-score: uint,
+    combined-score: uint,
+    rank-position: uint,
+    last-calculated: uint
+  }
+)
+
+(define-map priority-suggestions
+  { user: principal }
+  { suggested-order: (list 50 uint) }
+)
+
+(define-data-var global-priority-weights 
+  { deadline: uint, difficulty: uint, hours: uint, preference: uint }
+  { deadline: u40, difficulty: u30, hours: u20, preference: u10 }
+)
+
+(define-public (initialize-priority-engine 
+    (deadline-weight uint) 
+    (difficulty-weight uint) 
+    (hours-weight uint) 
+    (preference-weight uint))
+  (begin
+    (asserts! (is-eq (+ (+ (+ deadline-weight difficulty-weight) hours-weight) preference-weight) u100) (err u401))
+    (ok (map-set smart-priority-engine
+      { user: tx-sender }
+      {
+        deadline-weight: deadline-weight,
+        difficulty-weight: difficulty-weight,
+        hours-weight: hours-weight,
+        preference-weight: preference-weight,
+        auto-update: true
+      }))
+  )
+)
+
+(define-public (calculate-smart-priority (task-id uint))
+  (let 
+    (
+      (task (unwrap! (map-get? tasks { id: task-id }) (err u404)))
+      (difficulty-data (map-get? task-difficulty { task-id: task-id }))
+      (engine-config (unwrap! (map-get? smart-priority-engine { user: tx-sender }) (err u405)))
+      (current-block block-height)
+      (task-deadline (get deadline task))
+      (blocks-until-deadline (if (> task-deadline current-block) (- task-deadline current-block) u0))
+      (deadline-score (if (is-eq blocks-until-deadline u0) u100 
+                       (if (< blocks-until-deadline u144) u80
+                         (if (< blocks-until-deadline u1008) u60
+                           (if (< blocks-until-deadline u4032) u40 u20)))))
+      (difficulty-level (default-to u2 (get level difficulty-data)))
+      (estimated-hours (default-to u4 (get estimated-hours difficulty-data)))
+      (difficulty-score (* difficulty-level u25))
+      (hours-score (if (> estimated-hours u8) u80
+                    (if (> estimated-hours u4) u60
+                      (if (> estimated-hours u2) u40 u20))))
+      (preference-score (get priority task))
+      (weighted-deadline (* deadline-score (get deadline-weight engine-config)))
+      (weighted-difficulty (* difficulty-score (get difficulty-weight engine-config)))
+      (weighted-hours (* hours-score (get hours-weight engine-config)))
+      (weighted-preference (* preference-score (get preference-weight engine-config)))
+      (combined-score (/ (+ (+ (+ weighted-deadline weighted-difficulty) weighted-hours) weighted-preference) u100))
+    )
+    (ok (map-set task-smart-scores
+      { task-id: task-id }
+      {
+        deadline-score: deadline-score,
+        difficulty-score: difficulty-score,
+        hours-score: hours-score,
+        combined-score: combined-score,
+        rank-position: u0,
+        last-calculated: current-block
+      }))
+  )
+)
+
+(define-public (generate-priority-suggestions)
+  (let 
+    (
+      (user-tasks (filter is-user-task (var-get task-ids)))
+      (scored-tasks (unwrap! (as-max-len? (map calculate-task-score-pair user-tasks) u50) (err u500)))
+      (sorted-tasks (sort-tasks-by-score scored-tasks))
+    )
+    (ok (map-set priority-suggestions
+      { user: tx-sender }
+      { suggested-order: (map extract-task-id (unwrap! (as-max-len? sorted-tasks u50) (err u500))) }))
+  )
+)
+
+(define-public (update-engine-weights 
+    (deadline-weight uint) 
+    (difficulty-weight uint) 
+    (hours-weight uint) 
+    (preference-weight uint))
+  (begin
+    (asserts! (is-eq (+ (+ (+ deadline-weight difficulty-weight) hours-weight) preference-weight) u100) (err u401))
+    (let ((current-config (unwrap! (map-get? smart-priority-engine { user: tx-sender }) (err u405))))
+      (ok (map-set smart-priority-engine
+        { user: tx-sender }
+        (merge current-config 
+          {
+            deadline-weight: deadline-weight,
+            difficulty-weight: difficulty-weight,
+            hours-weight: hours-weight,
+            preference-weight: preference-weight
+          })))
+    )
+  )
+)
+
+(define-public (auto-recalculate-priorities)
+  (let ((user-tasks (filter is-user-task (var-get task-ids))))
+    (fold recalculate-single-task user-tasks (ok true))
+  )
+)
+
+(define-private (calculate-task-score-pair (task-id uint))
+  { task-id: task-id, score: (get-task-smart-score task-id) }
+)
+
+(define-private (get-task-smart-score (task-id uint))
+  (default-to u0 (get combined-score (map-get? task-smart-scores { task-id: task-id })))
+)
+
+(define-private (sort-tasks-by-score (task-pairs (list 50 { task-id: uint, score: uint })))
+  task-pairs
+)
+
+(define-private (extract-task-id (task-pair { task-id: uint, score: uint }))
+  (get task-id task-pair)
+)
+
+(define-private (recalculate-single-task (task-id uint) (previous-result (response bool uint)))
+  (match previous-result
+    success (calculate-smart-priority task-id)
+    error (err error)
+  )
+)
+
+(define-read-only (get-priority-suggestions)
+  (map-get? priority-suggestions { user: tx-sender })
+)
+
+(define-read-only (get-task-smart-score-details (task-id uint))
+  (map-get? task-smart-scores { task-id: task-id })
+)
+
+(define-read-only (get-engine-config)
+  (map-get? smart-priority-engine { user: tx-sender })
+)
+
 (define-map user-rewards
   { user: principal }
   {
