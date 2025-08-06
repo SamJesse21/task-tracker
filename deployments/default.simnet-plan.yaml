@@ -52,6 +52,6 @@ plan:
         - emulated-contract-publish:
             contract-name: task-tracker
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            path: contracts/task-tracker.clar
+            path: "contracts\\task-tracker.clar"
             clarity-version: 2
       epoch: "2.5"
