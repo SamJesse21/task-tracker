@@ -1039,6 +1039,354 @@
   (map-get? smart-priority-engine { user: tx-sender })
 )
 
+;; Task Delegation Network with Skill Matching
+;; Enables users to delegate tasks to skilled community members
+
+;; User skill profiles and availability
+(define-map user-skills
+  { user: principal }
+  {
+    skills: (list 10 (string-utf8 30)),
+    hourly-rate: uint,
+    availability-hours: uint,
+    timezone: (string-utf8 10),
+    active: bool,
+    last-updated: uint
+  }
+)
+
+;; Delegation requests posted by task creators
+(define-map delegation-requests
+  { request-id: uint }
+  {
+    task-id: uint,
+    delegator: principal,
+    required-skills: (list 5 (string-utf8 30)),
+    max-reward: uint,
+    deadline: uint,
+    description: (string-utf8 300),
+    status: (string-utf8 20), ;; "open", "assigned", "completed", "cancelled"
+    created-at: uint
+  }
+)
+
+;; Active delegation contracts between users
+(define-map delegation-contracts
+  { contract-id: uint }
+  {
+    request-id: uint,
+    delegator: principal,
+    delegatee: principal,
+    agreed-reward: uint,
+    start-time: uint,
+    expected-completion: uint,
+    status: (string-utf8 20), ;; "active", "completed", "disputed", "cancelled"
+    performance-rating: uint
+  }
+)
+
+;; User reputation and performance metrics
+(define-map user-reputation
+  { user: principal }
+  {
+    total-delegations: uint,
+    completed-delegations: uint,
+    average-rating: uint,
+    total-earnings: uint,
+    reliability-score: uint,
+    skill-endorsements: uint
+  }
+)
+
+;; Skill endorsements from other users
+(define-map skill-endorsements
+  { endorser: principal, endorsed: principal, skill: (string-utf8 30) }
+  { endorsement-strength: uint, timestamp: uint }
+)
+
+;; Delegation marketplace bids
+(define-map delegation-bids
+  { request-id: uint, bidder: principal }
+  {
+    proposed-reward: uint,
+    estimated-completion: uint,
+    proposal-message: (string-utf8 200),
+    bid-timestamp: uint
+  }
+)
+
+;; Skill matching scores for recommendations
+(define-map skill-matches
+  { request-id: uint, candidate: principal }
+  {
+    skill-score: uint,
+    availability-score: uint,
+    reputation-score: uint,
+    total-match-score: uint,
+    last-calculated: uint
+  }
+)
+
+;; Data variables for ID management
+(define-data-var next-delegation-request-id uint u0)
+(define-data-var next-delegation-contract-id uint u0)
+
+;; Register user skills and availability
+(define-public (register-skills 
+    (skills (list 10 (string-utf8 30)))
+    (hourly-rate uint)
+    (availability-hours uint)
+    (timezone (string-utf8 10)))
+  (begin
+    ;; Validate input parameters
+    (asserts! (> hourly-rate u0) (err u401))
+    (asserts! (<= availability-hours u168) (err u402)) ;; Max 168 hours per week
+    (asserts! (> (len skills) u0) (err u403))
+    
+    (ok (map-set user-skills
+      { user: tx-sender }
+      {
+        skills: skills,
+        hourly-rate: hourly-rate,
+        availability-hours: availability-hours,
+        timezone: timezone,
+        active: true,
+        last-updated: block-height
+      }))
+  )
+)
+
+;; Create a delegation request for a task
+(define-public (create-delegation-request
+    (task-id uint)
+    (required-skills (list 5 (string-utf8 30)))
+    (max-reward uint)
+    (deadline uint)
+    (description (string-utf8 300)))
+  (let 
+    (
+      (request-id (var-get next-delegation-request-id))
+      (task (unwrap! (map-get? tasks { id: task-id }) (err u404)))
+    )
+    ;; Verify task ownership
+    (asserts! (is-eq tx-sender (get creator task)) (err u403))
+    ;; Validate parameters
+    (asserts! (> max-reward u0) (err u401))
+    (asserts! (> deadline block-height) (err u405))
+    (asserts! (> (len required-skills) u0) (err u406))
+    
+    ;; Increment request ID
+    (var-set next-delegation-request-id (+ request-id u1))
+    
+    (ok (map-set delegation-requests
+      { request-id: request-id }
+      {
+        task-id: task-id,
+        delegator: tx-sender,
+        required-skills: required-skills,
+        max-reward: max-reward,
+        deadline: deadline,
+        description: description,
+        status: u"open",
+        created-at: block-height
+      }))
+  )
+)
+
+;; Submit a bid for a delegation request
+(define-public (submit-delegation-bid
+    (request-id uint)
+    (proposed-reward uint)
+    (estimated-completion uint)
+    (proposal-message (string-utf8 200)))
+  (let ((request (unwrap! (map-get? delegation-requests { request-id: request-id }) (err u404))))
+    ;; Validate request is still open
+    (asserts! (is-eq (get status request) u"open") (err u407))
+    ;; Validate bid parameters
+    (asserts! (<= proposed-reward (get max-reward request)) (err u408))
+    (asserts! (<= estimated-completion (get deadline request)) (err u409))
+    ;; Prevent self-bidding
+    (asserts! (not (is-eq tx-sender (get delegator request))) (err u410))
+    
+    (ok (map-set delegation-bids
+      { request-id: request-id, bidder: tx-sender }
+      {
+        proposed-reward: proposed-reward,
+        estimated-completion: estimated-completion,
+        proposal-message: proposal-message,
+        bid-timestamp: block-height
+      }))
+  )
+)
+
+;; Accept a delegation bid and create contract
+(define-public (accept-delegation-bid (request-id uint) (chosen-bidder principal))
+  (let 
+    (
+      (request (unwrap! (map-get? delegation-requests { request-id: request-id }) (err u404)))
+      (bid (unwrap! (map-get? delegation-bids { request-id: request-id, bidder: chosen-bidder }) (err u411)))
+      (contract-id (var-get next-delegation-contract-id))
+    )
+    ;; Verify request ownership and status
+    (asserts! (is-eq tx-sender (get delegator request)) (err u403))
+    (asserts! (is-eq (get status request) u"open") (err u407))
+    
+    ;; Create delegation contract
+    (var-set next-delegation-contract-id (+ contract-id u1))
+    (map-set delegation-contracts
+      { contract-id: contract-id }
+      {
+        request-id: request-id,
+        delegator: tx-sender,
+        delegatee: chosen-bidder,
+        agreed-reward: (get proposed-reward bid),
+        start-time: block-height,
+        expected-completion: (get estimated-completion bid),
+        status: u"active",
+        performance-rating: u0
+      })
+    
+    ;; Update request status
+    (map-set delegation-requests
+      { request-id: request-id }
+      (merge request { status: u"assigned" }))
+    
+    (ok contract-id)
+  )
+)
+
+;; Complete delegation and release payment
+(define-public (complete-delegation (contract-id uint) (performance-rating uint))
+  (let ((contract (unwrap! (map-get? delegation-contracts { contract-id: contract-id }) (err u404))))
+    ;; Validate contract ownership and status
+    (asserts! (is-eq tx-sender (get delegator contract)) (err u403))
+    (asserts! (is-eq (get status contract) u"active") (err u412))
+    ;; Validate rating range
+    (asserts! (and (>= performance-rating u1) (<= performance-rating u5)) (err u413))
+    
+    ;; Update contract status and rating
+    (map-set delegation-contracts
+      { contract-id: contract-id }
+      (merge contract { 
+        status: u"completed",
+        performance-rating: performance-rating
+      }))
+    
+    ;; Update delegatee reputation
+    (update-user-reputation (get delegatee contract) performance-rating (get agreed-reward contract))
+    
+    (ok true)
+  )
+)
+
+;; Calculate skill matching score for a user and request
+(define-public (calculate-skill-match (request-id uint) (candidate principal))
+  (let 
+    (
+      (request (unwrap! (map-get? delegation-requests { request-id: request-id }) (err u404)))
+      (user-profile (unwrap! (map-get? user-skills { user: candidate }) (err u414)))
+      (reputation (default-to 
+        { total-delegations: u0, completed-delegations: u0, average-rating: u0, 
+          total-earnings: u0, reliability-score: u0, skill-endorsements: u0 }
+        (map-get? user-reputation { user: candidate })))
+      (required-skills (get required-skills request))
+      (user-skills-list (get skills user-profile))
+      (skill-overlap (calculate-skill-overlap required-skills user-skills-list))
+      (skill-score (* skill-overlap u20)) ;; Max 100 if all skills match
+      (availability-score (if (get active user-profile) u25 u0))
+      (reputation-score (if (> (get average-rating reputation) u25) u25 (get average-rating reputation)))
+      (total-score (+ (+ skill-score availability-score) reputation-score))
+    )
+    (ok (map-set skill-matches
+      { request-id: request-id, candidate: candidate }
+      {
+        skill-score: skill-score,
+        availability-score: availability-score,
+        reputation-score: reputation-score,
+        total-match-score: total-score,
+        last-calculated: block-height
+      }))
+  )
+)
+
+;; Endorse a user's skill
+(define-public (endorse-skill (endorsed-user principal) (skill (string-utf8 30)) (strength uint))
+  (begin
+    ;; Validate endorsement parameters
+    (asserts! (not (is-eq tx-sender endorsed-user)) (err u415))
+    (asserts! (and (>= strength u1) (<= strength u5)) (err u416))
+    
+    (ok (map-set skill-endorsements
+      { endorser: tx-sender, endorsed: endorsed-user, skill: skill }
+      { endorsement-strength: strength, timestamp: block-height }))
+  )
+)
+
+;; Update user availability status
+(define-public (update-availability (active bool))
+  (let ((current-profile (unwrap! (map-get? user-skills { user: tx-sender }) (err u414))))
+    (ok (map-set user-skills
+      { user: tx-sender }
+      (merge current-profile { active: active, last-updated: block-height })))
+  )
+)
+
+;; Private helper function to update user reputation
+(define-private (update-user-reputation (user principal) (rating uint) (earned-amount uint))
+  (let 
+    ((current-rep (default-to 
+      { total-delegations: u0, completed-delegations: u0, average-rating: u0, 
+        total-earnings: u0, reliability-score: u0, skill-endorsements: u0 }
+      (map-get? user-reputation { user: user }))))
+    (map-set user-reputation
+      { user: user }
+      {
+        total-delegations: (+ (get total-delegations current-rep) u1),
+        completed-delegations: (+ (get completed-delegations current-rep) u1),
+        average-rating: (/ (+ (* (get average-rating current-rep) (get total-delegations current-rep)) rating) 
+                          (+ (get total-delegations current-rep) u1)),
+        total-earnings: (+ (get total-earnings current-rep) earned-amount),
+        reliability-score: (if (> (+ (get reliability-score current-rep) u5) u100) u100 (+ (get reliability-score current-rep) u5)),
+        skill-endorsements: (get skill-endorsements current-rep)
+      })
+  )
+)
+
+;; Private helper to calculate skill overlap percentage
+(define-private (calculate-skill-overlap (required (list 5 (string-utf8 30))) (available (list 10 (string-utf8 30))))
+  (fold check-skill-match required u0)
+)
+
+;; Helper function for skill matching
+(define-private (check-skill-match (skill (string-utf8 30)) (count uint))
+  count ;; Simplified implementation - would need more complex matching logic
+)
+
+;; Read-only functions for querying delegation data
+(define-read-only (get-user-skills (user principal))
+  (map-get? user-skills { user: user })
+)
+
+(define-read-only (get-delegation-request (request-id uint))
+  (map-get? delegation-requests { request-id: request-id })
+)
+
+(define-read-only (get-delegation-contract (contract-id uint))
+  (map-get? delegation-contracts { contract-id: contract-id })
+)
+
+(define-read-only (get-user-reputation (user principal))
+  (map-get? user-reputation { user: user })
+)
+
+(define-read-only (get-delegation-bid (request-id uint) (bidder principal))
+  (map-get? delegation-bids { request-id: request-id, bidder: bidder })
+)
+
+(define-read-only (get-skill-match-score (request-id uint) (candidate principal))
+  (map-get? skill-matches { request-id: request-id, candidate: candidate })
+)
+
 (define-map user-rewards
   { user: principal }
   {
