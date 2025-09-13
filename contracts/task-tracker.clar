@@ -1653,3 +1653,317 @@
     u0
   )
 )
+
+;; Task Performance Forecasting Engine
+;; Predicts task completion times based on historical data and user patterns
+
+;; Historical performance tracking per user and difficulty level
+(define-map performance-history
+  { user: principal, difficulty-level: uint }
+  {
+    total-tasks: uint,
+    total-time-spent: uint,
+    average-completion-time: uint,
+    accuracy-rate: uint,
+    last-updated: uint
+  }
+)
+
+;; Current workload analysis
+(define-map workload-analysis
+  { user: principal }
+  {
+    active-tasks: uint,
+    estimated-total-hours: uint,
+    overdue-tasks: uint,
+    capacity-utilization: uint,
+    forecast-accuracy: uint,
+    last-calculated: uint
+  }
+)
+
+;; Task completion forecasts
+(define-map task-forecasts
+  { task-id: uint }
+  {
+    estimated-completion-time: uint,
+    confidence-level: uint,
+    risk-factors: (list 3 (string-utf8 30)),
+    forecast-method: (string-utf8 20),
+    created-at: uint
+  }
+)
+
+;; Performance patterns and trends
+(define-map performance-trends
+  { user: principal }
+  {
+    productivity-trend: uint, ;; 0-declining, 50-stable, 100-improving
+    peak-performance-hours: uint,
+    burnout-risk: uint,
+    optimal-task-load: uint,
+    trend-direction: (string-utf8 10)
+  }
+)
+
+;; Update performance history when tasks are completed
+(define-public (update-performance-history (task-id uint) (actual-time-spent uint))
+  (let 
+    (
+      (task (unwrap! (map-get? tasks { id: task-id }) (err u404)))
+      (difficulty-data (map-get? task-difficulty { task-id: task-id }))
+      (difficulty-level (default-to u2 (get level difficulty-data)))
+      (user tx-sender)
+      (current-history (default-to
+        { total-tasks: u0, total-time-spent: u0, average-completion-time: u0, accuracy-rate: u100, last-updated: u0 }
+        (map-get? performance-history { user: user, difficulty-level: difficulty-level })))
+      (new-total-tasks (+ (get total-tasks current-history) u1))
+      (new-total-time (+ (get total-time-spent current-history) actual-time-spent))
+      (new-average (if (> new-total-tasks u0) (/ new-total-time new-total-tasks) u0))
+    )
+    (asserts! (is-eq tx-sender (get creator task)) (err u403))
+    (asserts! (get completed task) (err u406))
+    (asserts! (> actual-time-spent u0) (err u401))
+    
+    (ok (map-set performance-history
+      { user: user, difficulty-level: difficulty-level }
+      {
+        total-tasks: new-total-tasks,
+        total-time-spent: new-total-time,
+        average-completion-time: new-average,
+        accuracy-rate: (calculate-forecast-accuracy user difficulty-level),
+        last-updated: block-height
+      }))
+  )
+)
+
+;; Generate completion time forecast for a new task
+(define-public (forecast-task-completion (task-id uint))
+  (let 
+    (
+      (task (unwrap! (map-get? tasks { id: task-id }) (err u404)))
+      (difficulty-data (map-get? task-difficulty { task-id: task-id }))
+      (difficulty-level (default-to u2 (get level difficulty-data)))
+      (estimated-hours (default-to u4 (get estimated-hours difficulty-data)))
+      (user (get creator task))
+      (history (map-get? performance-history { user: user, difficulty-level: difficulty-level }))
+      (workload (map-get? workload-analysis { user: user }))
+      (base-estimate (match history
+        hist (get average-completion-time hist)
+        estimated-hours))
+      (workload-factor (match workload
+        load (if (> (get capacity-utilization load) u80) u120 u100)
+        u100))
+      (adjusted-estimate (/ (* base-estimate workload-factor) u100))
+      (confidence (calculate-forecast-confidence user difficulty-level))
+      (risk-factors (identify-risk-factors task-id user))
+    )
+    (asserts! (is-eq tx-sender user) (err u403))
+    
+    (ok (map-set task-forecasts
+      { task-id: task-id }
+      {
+        estimated-completion-time: adjusted-estimate,
+        confidence-level: confidence,
+        risk-factors: risk-factors,
+        forecast-method: u"historical-pattern",
+        created-at: block-height
+      }))
+  )
+)
+
+;; Analyze current workload and capacity
+(define-public (analyze-workload-capacity)
+  (let 
+    (
+      (user tx-sender)
+      (user-tasks (filter is-user-task (var-get task-ids)))
+      (active-tasks (filter is-active-incomplete-task user-tasks))
+      (active-count (len active-tasks))
+      (total-estimated-hours (fold sum-task-hours active-tasks u0))
+      (overdue-count (fold count-overdue-tasks active-tasks u0))
+      (capacity-percent (if (> total-estimated-hours u0) 
+                         (let ((calc-percent (/ (* total-estimated-hours u100) u40)))
+                           (if (> calc-percent u100) u100 calc-percent)) u0))
+      (current-accuracy (calculate-overall-accuracy user))
+    )
+    (ok (map-set workload-analysis
+      { user: user }
+      {
+        active-tasks: active-count,
+        estimated-total-hours: total-estimated-hours,
+        overdue-tasks: overdue-count,
+        capacity-utilization: capacity-percent,
+        forecast-accuracy: current-accuracy,
+        last-calculated: block-height
+      }))
+  )
+)
+
+;; Generate performance trend analysis
+(define-public (analyze-performance-trends)
+  (let 
+    (
+      (user tx-sender)
+      (recent-tasks (get-recent-completed-tasks user))
+      (productivity-score (calculate-productivity-trend user))
+      (peak-hours (analyze-peak-performance-hours user))
+      (burnout-score (calculate-burnout-risk user))
+      (optimal-load (calculate-optimal-task-load user))
+      (trend-dir (if (> productivity-score u60) u"improving" 
+                   (if (< productivity-score u40) u"declining" u"stable")))
+    )
+    (ok (map-set performance-trends
+      { user: user }
+      {
+        productivity-trend: productivity-score,
+        peak-performance-hours: peak-hours,
+        burnout-risk: burnout-score,
+        optimal-task-load: optimal-load,
+        trend-direction: trend-dir
+      }))
+  )
+)
+
+;; Private helper functions for forecasting
+
+(define-private (calculate-forecast-accuracy (user principal) (difficulty-level uint))
+  (match (map-get? performance-history { user: user, difficulty-level: difficulty-level })
+    hist (let ((new-rate (+ (get accuracy-rate hist) u5)))
+           (if (> new-rate u100) u100 new-rate))
+    u75
+  )
+)
+
+(define-private (calculate-forecast-confidence (user principal) (difficulty-level uint))
+  (match (map-get? performance-history { user: user, difficulty-level: difficulty-level })
+    hist (if (> (get total-tasks hist) u10) u90
+           (if (> (get total-tasks hist) u5) u75
+             (if (> (get total-tasks hist) u2) u60 u40)))
+    u30
+  )
+)
+
+(define-private (identify-risk-factors (task-id uint) (user principal))
+  (let 
+    (
+      (workload (map-get? workload-analysis { user: user }))
+      (high-capacity (match workload load (> (get capacity-utilization load) u85) false))
+      (has-overdue (match workload load (> (get overdue-tasks load) u2) false))
+    )
+    (if high-capacity
+      (if has-overdue (list u"high-workload" u"overdue-tasks" u"time-pressure") (list u"high-workload"))
+      (if has-overdue (list u"overdue-tasks") (list))
+    )
+  )
+)
+
+(define-private (is-active-incomplete-task (task-id uint))
+  (match (map-get? tasks { id: task-id })
+    task (and (not (get completed task)) (is-eq tx-sender (get creator task)))
+    false
+  )
+)
+
+(define-private (sum-task-hours (task-id uint) (accumulator uint))
+  (let ((difficulty-data (map-get? task-difficulty { task-id: task-id })))
+    (+ accumulator (default-to u4 (get estimated-hours difficulty-data)))
+  )
+)
+
+(define-private (count-overdue-tasks (task-id uint) (count uint))
+  (match (map-get? tasks { id: task-id })
+    task (if (and (not (get completed task)) (< (get deadline task) block-height))
+           (+ count u1)
+           count)
+    count
+  )
+)
+
+(define-private (get-recent-completed-tasks (user principal))
+  (filter is-recent-completed-task (filter is-user-task (var-get task-ids)))
+)
+
+(define-private (is-recent-completed-task (task-id uint))
+  (match (map-get? tasks { id: task-id })
+    task (and (get completed task) (< (- block-height u1008) block-height)) ;; Last week
+    false
+  )
+)
+
+(define-private (calculate-productivity-trend (user principal))
+  (match (map-get? user-rewards { user: user })
+    rewards (let ((trend-score (+ (* (get current-streak rewards) u10) u30)))
+              (if (> trend-score u100) u100 trend-score))
+    u50
+  )
+)
+
+(define-private (analyze-peak-performance-hours (user principal))
+  u14 ;; Simplified: assume 2 PM is peak (block 14 of day)
+)
+
+(define-private (calculate-burnout-risk (user principal))
+  (match (map-get? workload-analysis { user: user })
+    load (if (> (get capacity-utilization load) u90) u80
+           (if (> (get capacity-utilization load) u70) u50 u20))
+    u20
+  )
+)
+
+(define-private (calculate-optimal-task-load (user principal))
+  (match (map-get? performance-trends { user: user })
+    trends (if (> (get burnout-risk trends) u60) u3
+             (if (< (get productivity-trend trends) u40) u5 u8))
+    u5
+  )
+)
+
+(define-private (calculate-overall-accuracy (user principal))
+  (let 
+    (
+      (easy-history (map-get? performance-history { user: user, difficulty-level: u1 }))
+      (medium-history (map-get? performance-history { user: user, difficulty-level: u2 }))
+      (hard-history (map-get? performance-history { user: user, difficulty-level: u3 }))
+      (easy-acc (match easy-history hist (get accuracy-rate hist) u0))
+      (medium-acc (match medium-history hist (get accuracy-rate hist) u0))
+      (hard-acc (match hard-history hist (get accuracy-rate hist) u0))
+      (total-histories (+ (if (is-some easy-history) u1 u0)
+                          (+ (if (is-some medium-history) u1 u0)
+                             (if (is-some hard-history) u1 u0))))
+    )
+    (if (> total-histories u0)
+      (/ (+ (+ easy-acc medium-acc) hard-acc) total-histories)
+      u75) ;; Default accuracy if no history
+  )
+)
+
+;; Read-only functions for forecasting insights
+
+(define-read-only (get-task-forecast (task-id uint))
+  (map-get? task-forecasts { task-id: task-id })
+)
+
+(define-read-only (get-workload-analysis (user principal))
+  (map-get? workload-analysis { user: user })
+)
+
+(define-read-only (get-performance-trends (user principal))
+  (map-get? performance-trends { user: user })
+)
+
+(define-read-only (get-capacity-recommendation (user principal))
+  (match (map-get? workload-analysis { user: user })
+    analysis
+      (let ((utilization (get capacity-utilization analysis)))
+        (if (> utilization u85)
+          u"reduce-workload"
+          (if (< utilization u50)
+            u"can-take-more"
+            u"optimal-load"
+          )
+        )
+      )
+    u"no-data"
+  )
+)
